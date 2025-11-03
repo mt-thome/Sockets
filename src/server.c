@@ -10,8 +10,10 @@
 #include <errno.h>
 
 #define PORT 8080
+#define TEST_PORT 8081
 #define MAX_CLIENTS 10
 #define IMAGE_SIZE 2000
+#define BUFFER_SIZE 1024
 
 typedef struct {
     int socket_fd;
@@ -53,8 +55,99 @@ int init_server(){
     return server_fd;
 }
 
+// Função para inicializar servidor de teste em outra porta
+int init_test_server(int port){
+    int server_fd;
+    struct sockaddr_in address;
+    int opt = 1;
+
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+        perror("Test Socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+        perror("Test Setsockopt failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(port);
+
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+        perror("Test Bind failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    if (listen(server_fd, 5) < 0) {
+        perror("Test Listen failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+    
+    printf("Servidor de teste inicializado na porta %d\n", port);
+    return server_fd;
+}
+
 void close_server(int server_fd){
     close(server_fd);
+}
+
+// Thread para gerenciar servidor de teste
+void* test_server_thread(void* arg) {
+    int test_server_fd = *((int*)arg);
+    struct sockaddr_in client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    char buffer[BUFFER_SIZE];
+    
+    printf("Thread de teste iniciada. Aguardando conexões na porta %d...\n", TEST_PORT);
+    
+    while(1) {
+        int client_socket = accept(test_server_fd, (struct sockaddr *)&client_addr, &addr_len);
+        
+        if (client_socket < 0) {
+            perror("Erro ao aceitar cliente de teste");
+            continue;
+        }
+        
+        printf("\n[TESTE] Cliente conectado: %s:%d\n", 
+               inet_ntoa(client_addr.sin_addr), 
+               ntohs(client_addr.sin_port));
+        
+        // Receber string do cliente
+        memset(buffer, 0, BUFFER_SIZE);
+        ssize_t bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
+        
+        if (bytes_received > 0) {
+            buffer[bytes_received] = '\0';
+            printf("[TESTE] Mensagem recebida: '%s'\n", buffer);
+            
+            // Preparar resposta
+            char response[BUFFER_SIZE];
+            snprintf(response, BUFFER_SIZE, 
+                    "Servidor recebeu sua mensagem: '%s' (tamanho: %zd bytes)", 
+                    buffer, bytes_received);
+            
+            // Enviar resposta
+            if (send(client_socket, response, strlen(response), 0) < 0) {
+                perror("[TESTE] Erro ao enviar resposta");
+            } else {
+                printf("[TESTE] Resposta enviada: '%s'\n", response);
+            }
+        } else if (bytes_received == 0) {
+            printf("[TESTE] Cliente desconectou\n");
+        } else {
+            perror("[TESTE] Erro ao receber dados");
+        }
+        
+        close(client_socket);
+        printf("[TESTE] Conexão fechada\n\n");
+    }
+    
+    return NULL;
 }
 
 // Função para aguardar conexões de clientes
@@ -115,27 +208,20 @@ void distribute_matrix_blocks(ClientInfo *clients, int num_clients, int num_bloc
     
     for (int client = 0; client < num_clients; client++) {
         printf("\nEnviando %d blocos para Cliente %d...\n", num_blocks, client + 1);
-        
         for (int block = 0; block < num_blocks; block++) {
-            printf("  Enviando bloco %d (linhas %d a %d)...\n", 
-                   block + 1, current_row, current_row + block_rows - 1);
-            
-            if (send_matrix_block(clients[client].socket_fd, matrix, 
-                                 current_row, block_rows, block_cols) < 0) {
-                printf("  Erro ao enviar bloco para Cliente %d\n", client + 1);
+            printf("  Enviando bloco %d (linhas %d a %d)...\n", block + 1, current_row, current_row + block_rows - 1);
+            if (send_matrix_block(clients[client].socket_fd, matrix, current_row, block_rows, block_cols) < 0) {
+                printf(" Erro ao enviar bloco para Cliente %d\n", client + 1);
             } else {
                 printf("  Bloco %d enviado com sucesso!\n", block + 1);
             }
-            
             current_row += block_rows;
-            
             // Reiniciar se passar do tamanho da matriz (distribuição cíclica)
             if (current_row >= total_rows) {
                 current_row = 0;
             }
         }
     }
-    
     printf("\nTodos os blocos foram distribuídos!\n");
     
     // Liberar memória da matriz
@@ -151,7 +237,31 @@ void close_all_clients(ClientInfo *clients, int num_clients) {
 }
 
 int main(){
-    int num_clients, num_blocks, num_lines, num_columns;
+    FILE *fp;
+    double matrix[IMAGE_SIZE][IMAGE_SIZE];
+    int i, j, num_clients, num_blocks, num_lines, num_columns;
+
+    fp = fopen("matriz_2000x2000.txt", "r");
+    if (fp == NULL) {
+        perror("Erro ao abrir arquivo");
+        return 1;
+    }
+    // Ler dados da matriz do arquivo
+    for (i = 0; i < IMAGE_SIZE; i++) {
+        for (j = 0; j < IMAGE_SIZE; j++) {
+            fscanf(fp, "%lf", &matrix[i][j]);
+        }
+    }
+    fclose(fp);
+
+    // Inicializar servidor de teste em thread separada
+    int test_server_fd = init_test_server(TEST_PORT);
+    pthread_t test_thread;
+    if (pthread_create(&test_thread, NULL, test_server_thread, &test_server_fd) != 0) {
+        perror("Erro ao criar thread de teste");
+        return 1;
+    }
+    pthread_detach(test_thread); // Deixar thread rodar independentemente
 
     printf("=== Configuração do Servidor ===\n");
     printf("Digite a quantidade de clientes do teste: ");
@@ -166,6 +276,9 @@ int main(){
     scanf("%d", &num_lines);
     printf("Digite a quantidade de colunas por bloco: ");
     scanf("%d", &num_columns);
+
+    divide_matrix_into_blocks(matrix, IMAGE_SIZE, IMAGE_SIZE, num_clients, num_blocks, num_lines, num_columns);
+
     // Inicializar servidor
     int server_fd = init_server();
     printf("\nServidor inicializado e escutando na porta %d\n", PORT);
@@ -177,6 +290,7 @@ int main(){
         printf("Erro ao aguardar clientes.\n");
         free(clients);
         close_server(server_fd);
+        close_server(test_server_fd);
         return 1;
     }
     
@@ -189,6 +303,7 @@ int main(){
     free(clients);
     
     close_server(server_fd);
+    close_server(test_server_fd);
     printf("Servidor encerrado.\n");
     
     return 0;
