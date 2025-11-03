@@ -8,7 +8,7 @@
 
 #define BUFFER_SIZE 8192
 #define IMAGE_SIZE 2000
-#define SERVER_PORT 8080
+#define SERVER_PORT 8081
 #define SERVER_IP "127.0.0.1"
 
 int main() {
