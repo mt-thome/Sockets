@@ -8,14 +8,15 @@
 
 #define BUFFER_SIZE 8192
 #define IMAGE_SIZE 2000
-#define SERVER_PORT 8081
+#define SERVER_PORT 8080
 #define SERVER_IP "127.0.0.1"
 
 int main() {
-
     int socket_fd;
     struct sockaddr_in server_addr;
-    char buffer[1024] = {0};
+    int dimensions[6] = {0};
+    int **matrix;
+
     const char  *msg = "Client message invited!";
 
     if((socket_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0){
@@ -45,10 +46,45 @@ int main() {
     printf("Sending message: '%s'\n", msg);
     write(socket_fd, msg, strlen(msg));
 
-    int valread = read(socket_fd, buffer, 1024);
+    int valread = read(socket_fd, dimensions, 2*sizeof(int));
+
     if(valread > 0){
-        buffer[valread] = '\0';
-        printf("Server anwser: %s\n", buffer);
+        if(dimensions[2]==1 || dimensions[3]==1){
+            int **matrix = malloc((dimensions[0]+1)*sizeof(int *));
+        }
+        else{
+            int **matrix = malloc(dimensions[0]*sizeof(int *));
+        }
+        if(dimensions[4]==1 || dimensions[5]==1){
+            for(int i=0;i<dimensions[0];i++){
+                matrix[i] = malloc((dimensions[1]+1)*sizeof(int));
+            }
+        }
+        else{
+            for(int i=0;i<dimensions[0];i++){
+                matrix[i] = malloc(dimensions[1]*sizeof(int));
+            }
+        }
+
+        // Atribuindo os valores para cada espaço da imagem
+        for(int i=0;i<dimensions[0];i++){
+            for(int j=0;j<dimensions[1];j++){
+                int val_matrix = read(socket_fd, matrix[i][j], sizeof(int));
+                if(val_matrix < 0){
+                    perror("Invalid number read from server");
+                    exit(EXIT_FAILURE);
+                }
+            }
+        }
+
+        // Processing matrix
+        if(dimensions[0] < 2000)
+        for(int i=0;i<dimensions[0];i++){
+            for(int j=0;j<dimensions[1];j++){
+
+            }
+        }
+
     }
     else{
         printf("Server dont send a anwser or closed connection.\n");
