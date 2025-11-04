@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 199309L
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -280,12 +282,83 @@ void free_block_queue(BlockQueue *queue) {
     free(queue);
 }
 
+// Função para receber um bloco processado de um cliente
+int receive_processed_block(int client_socket, int **block_buffer, int num_rows, int num_cols) {
+    for (int i = 0; i < num_rows; i++) {
+        ssize_t bytes_received = recv(client_socket, block_buffer[i], num_cols * sizeof(int), MSG_WAITALL);
+        size_t expected_bytes = num_cols * sizeof(int);
+        
+        if (bytes_received < 0) {
+            perror("Erro ao receber linha do bloco processado");
+            return -1;
+        }
+        if ((size_t)bytes_received != expected_bytes) {
+            fprintf(stderr, "Erro: recebido %zd bytes, esperado %zu bytes\n", bytes_received, expected_bytes);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+// Função para receber resultados dos clientes e remontar a matriz
+void receive_results_from_clients(ClientInfo *clients, int num_clients, BlockQueue *queue, int **matrix, int num_lines, int num_columns) {
+    MatrixBlock *current_block = queue->head;
+    int client_idx = 0;
+    int block_count = 0;
+    
+    printf("\nAguardando resultados processados dos clientes...\n");
+    
+    while (current_block != NULL) {
+        printf("Recebendo bloco processado %d do Cliente %d...\n", block_count + 1, client_idx + 1);
+        
+        int **processed_block = malloc(current_block->num_rows * sizeof(int *));
+        for (int i = 0; i < current_block->num_rows; i++) {
+            processed_block[i] = malloc(current_block->num_cols * sizeof(int));
+        }
+
+        if (receive_processed_block(clients[client_idx].socket_fd, processed_block, current_block->num_rows, current_block->num_cols) < 0) {
+            printf("Erro ao receber bloco do Cliente %d\n", client_idx + 1);
+        } else {
+            printf("Bloco %d recebido com sucesso!\n", block_count + 1);
+            
+            int div_h = IMAGE_SIZE / num_lines;
+            int div_v = IMAGE_SIZE / num_columns;
+            int block_row = (block_count / div_v) % div_h;
+            int block_col = block_count % div_v;
+            
+            int start_row = block_row * num_lines;
+            int start_col = block_col * num_columns;
+            
+            int offset_i = current_block->flag_u ? 1 : 0;
+            int offset_j = current_block->flag_l ? 1 : 0;
+            
+            for (int i = 0; i < num_lines; i++) {
+                for (int j = 0; j < num_columns; j++) {
+                    matrix[start_row + i][start_col + j] = processed_block[i + offset_i][j + offset_j];
+                }
+            }
+        }
+        
+        for (int i = 0; i < current_block->num_rows; i++) {
+            free(processed_block[i]);
+        }
+        free(processed_block);
+        
+        current_block = current_block->next;
+        block_count++;
+        client_idx = (client_idx + 1) % num_clients;
+    }
+    
+    printf("\nTodos os blocos processados foram recebidos e remontados!\n");
+}
+
 int main(){
     FILE *fp;
     int **matrix;
     int i, j, num_clients, num_blocks, num_lines, num_columns;
+    struct timespec start_time, end_time;
+    
 
-    // Alocar matriz dinamicamente
     matrix = malloc(IMAGE_SIZE * sizeof(int *));
     for (i = 0; i < IMAGE_SIZE; i++) {
         matrix[i] = malloc(IMAGE_SIZE * sizeof(int));
@@ -294,7 +367,6 @@ int main(){
     fp = fopen("data/matriz_2000x2000.txt", "r");
     if (fp == NULL) {
         perror("Erro ao abrir arquivo");
-        // Liberar memória antes de sair
         for (i = 0; i < IMAGE_SIZE; i++) {
             free(matrix[i]);
         }
@@ -342,16 +414,26 @@ int main(){
         return 1;
     }
     
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
+    
     distribute_matrix_blocks(clients, num_clients, queue);
+
+    receive_results_from_clients(clients, num_clients, queue, matrix, num_lines, num_columns);
+    
+    clock_gettime(CLOCK_MONOTONIC, &end_time);
+    
+    double time_elapsed = (end_time.tv_sec - start_time.tv_sec) + (end_time.tv_nsec - start_time.tv_nsec) / 1000000000.0;
+    
+    printf("\n=== ESTATÍSTICAS ===\n");
+    printf("Tempo total de processamento: %.6f segundos\n", time_elapsed);
+    
     
     printf("\nFechando conexões...\n");
     close_all_clients(clients, num_clients);
     free(clients);
     
-    // Liberar memória da fila
     free_block_queue(queue);
     
-    // Liberar memória da matriz
     for (i = 0; i < IMAGE_SIZE; i++) {
         free(matrix[i]);
     }
