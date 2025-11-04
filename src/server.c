@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -10,10 +9,8 @@
 #include <errno.h>
 
 #define PORT 8080
-#define TEST_PORT 8081
 #define MAX_CLIENTS 10
 #define IMAGE_SIZE 2000
-#define BUFFER_SIZE 1024
 
 typedef struct {
     int socket_fd;
@@ -21,6 +18,23 @@ typedef struct {
     int client_id;
 } ClientInfo;
 
+typedef struct MatrixBlock {
+    int **matrix;
+    int num_rows;
+    int num_cols;
+    int flag_r;
+    int flag_l;
+    int flag_u;
+    int flag_d;
+    struct MatrixBlock *next;
+} MatrixBlock;
+
+typedef struct {
+    MatrixBlock *head;
+    int count;
+} BlockQueue;
+
+// Função para inicializar o servidor
 int init_server(){
     int server_fd;
     struct sockaddr_in address;
@@ -55,99 +69,9 @@ int init_server(){
     return server_fd;
 }
 
-// Função para inicializar servidor de teste em outra porta
-int init_test_server(int port){
-    int server_fd;
-    struct sockaddr_in address;
-    int opt = 1;
-
-    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
-        perror("Test Socket failed");
-        exit(EXIT_FAILURE);
-    }
-
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
-        perror("Test Setsockopt failed");
-        close(server_fd);
-        exit(EXIT_FAILURE);
-    }
-
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(port);
-
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
-        perror("Test Bind failed");
-        close(server_fd);
-        exit(EXIT_FAILURE);
-    }
-
-    if (listen(server_fd, 5) < 0) {
-        perror("Test Listen failed");
-        close(server_fd);
-        exit(EXIT_FAILURE);
-    }
-    
-    printf("Servidor de teste inicializado na porta %d\n", port);
-    return server_fd;
-}
-
+// Função para fechar o servidor
 void close_server(int server_fd){
     close(server_fd);
-}
-
-// Thread para gerenciar servidor de teste
-void* test_server_thread(void* arg) {
-    int test_server_fd = *((int*)arg);
-    struct sockaddr_in client_addr;
-    socklen_t addr_len = sizeof(client_addr);
-    char buffer[BUFFER_SIZE];
-    
-    printf("Thread de teste iniciada. Aguardando conexões na porta %d...\n", TEST_PORT);
-    
-    while(1) {
-        int client_socket = accept(test_server_fd, (struct sockaddr *)&client_addr, &addr_len);
-        
-        if (client_socket < 0) {
-            perror("Erro ao aceitar cliente de teste");
-            continue;
-        }
-        
-        printf("\n[TESTE] Cliente conectado: %s:%d\n", 
-               inet_ntoa(client_addr.sin_addr), 
-               ntohs(client_addr.sin_port));
-        
-        // Receber string do cliente
-        memset(buffer, 0, BUFFER_SIZE);
-        ssize_t bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
-        
-        if (bytes_received > 0) {
-            buffer[bytes_received] = '\0';
-            printf("[TESTE] Mensagem recebida: '%s'\n", buffer);
-            
-            // Preparar resposta
-            char response[BUFFER_SIZE];
-            snprintf(response, BUFFER_SIZE, 
-                    "Servidor recebeu sua mensagem: '%s' (tamanho: %zd bytes)", 
-                    buffer, bytes_received);
-            
-            // Enviar resposta
-            if (send(client_socket, response, strlen(response), 0) < 0) {
-                perror("[TESTE] Erro ao enviar resposta");
-            } else {
-                printf("[TESTE] Resposta enviada: '%s'\n", response);
-            }
-        } else if (bytes_received == 0) {
-            printf("[TESTE] Cliente desconectou\n");
-        } else {
-            perror("[TESTE] Erro ao receber dados");
-        }
-        
-        close(client_socket);
-        printf("[TESTE] Conexão fechada\n\n");
-    }
-    
-    return NULL;
 }
 
 // Função para aguardar conexões de clientes
@@ -156,31 +80,39 @@ int wait_for_clients(int server_fd, ClientInfo *clients, int num_clients) {
     socklen_t addr_len = sizeof(client_addr);
     printf("Aguardando %d clientes se conectarem...\n", num_clients);
     for (int i = 0; i < num_clients; i++) {
-        int client_socket = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
-        if (client_socket < 0) {
+        int client_socket;
+        if ((client_socket = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len)) < 0) {
             perror("Erro ao aceitar cliente");
             return -1;
         }
         clients[i].socket_fd = client_socket;
         clients[i].address = client_addr;
-        clients[i].client_id = i;
+        clients[i].client_id = i + 1;
         printf("Cliente %d conectado: %s:%d\n", i + 1, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
     }
     printf("Todos os %d clientes conectados!\n", num_clients);
     return 0;
 }
 
-// Função para enviar bloco de matriz para um cliente
-int send_matrix_block(int client_socket, double **matrix, int start_row, int num_rows, int num_cols) {
-    // Enviar dimensões do bloco
-    int dimensions[2] = {num_rows, num_cols};
-    if (send(client_socket, dimensions, sizeof(dimensions), 0) < 0) {
-        perror("Erro ao enviar dimensões");
+// Função para enviar bloco de matriz para um cliente (com flags e dimensões)
+int send_matrix_block(int client_socket, MatrixBlock *block) {
+    // Enviar dimensões do bloco e flags
+    int header[6] = {
+        block->num_rows, 
+        block->num_cols,
+        block->flag_u,
+        block->flag_d,
+        block->flag_l,
+        block->flag_r
+    };
+    if (send(client_socket, header, sizeof(header), 0) < 0) {
+        perror("Erro ao enviar header");
         return -1;
     }
+    
     // Enviar dados do bloco linha por linha
-    for (int i = start_row; i < start_row + num_rows; i++) {
-        if (send(client_socket, matrix[i], num_cols * sizeof(double), 0) < 0) {
+    for (int i = 0; i < block->num_rows; i++) {
+        if (send(client_socket, block->matrix[i], block->num_cols * sizeof(int), 0) < 0) {
             perror("Erro ao enviar linha da matriz");
             return -1;
         }
@@ -188,44 +120,140 @@ int send_matrix_block(int client_socket, double **matrix, int start_row, int num
     return 0;
 }
 
-// Função para distribuir blocos da matriz para os clientes
-void distribute_matrix_blocks(ClientInfo *clients, int num_clients, int num_blocks, int block_rows, int block_cols) {
-    printf("\nGerando matriz e distribuindo blocos...\n");
-    
-    // Calcular dimensões totais da matriz
-    int total_rows = num_blocks * block_rows;
-    int total_cols = block_cols;
-    
-    printf("Matriz total: %d x %d\n", total_rows, total_cols);
-    printf("Cada bloco: %d x %d\n", block_rows, block_cols);
-    printf("Blocos por cliente: %d\n", num_blocks);
-    
-    // Criar matriz completa
-    double **matrix = create_matrix(total_rows, total_cols);
-    
-    // Distribuir blocos para cada cliente
-    int current_row = 0;
-    
-    for (int client = 0; client < num_clients; client++) {
-        printf("\nEnviando %d blocos para Cliente %d...\n", num_blocks, client + 1);
-        for (int block = 0; block < num_blocks; block++) {
-            printf("  Enviando bloco %d (linhas %d a %d)...\n", block + 1, current_row, current_row + block_rows - 1);
-            if (send_matrix_block(clients[client].socket_fd, matrix, current_row, block_rows, block_cols) < 0) {
-                printf(" Erro ao enviar bloco para Cliente %d\n", client + 1);
-            } else {
-                printf("  Bloco %d enviado com sucesso!\n", block + 1);
-            }
-            current_row += block_rows;
-            // Reiniciar se passar do tamanho da matriz (distribuição cíclica)
-            if (current_row >= total_rows) {
-                current_row = 0;
+void divide_matrix(int num_blocks, int num_columns, int num_lines, int **matrix, BlockQueue *matrixQueue) {
+    int div_h, div_v;
+    div_h = IMAGE_SIZE / num_lines;
+    div_v = IMAGE_SIZE / num_columns;
+
+    for(int b = 0; b < num_blocks; b++) {
+        int block_row = (b / div_v) % div_h;
+        int block_col = b % div_v;
+        
+        // Determinar flags (se tem vizinhos)
+        int flag_u = (block_row > 0) ? 1 : 0;
+        int flag_d = (block_row < div_h - 1) ? 1 : 0;
+        int flag_l = (block_col > 0) ? 1 : 0;
+        int flag_r = (block_col < div_v - 1) ? 1 : 0;
+        
+        // Calcular dimensões reais com ghost cells
+        int actual_rows = num_lines + flag_u + flag_d;
+        int actual_cols = num_columns + flag_l + flag_r;
+        
+        // Alocar nova matriz para CADA bloco (incluindo ghost cells)
+        int **block_data = malloc(actual_rows * sizeof(int *));
+        for (int i = 0; i < actual_rows; i++) {
+            block_data[i] = malloc(actual_cols * sizeof(int));
+        }
+        
+        // Copiar dados do bloco principal
+        int start_row = block_row * num_lines;
+        int start_col = block_col * num_columns;
+        
+        for (int i = 0; i < num_lines; i++) {
+            for (int j = 0; j < num_columns; j++) {
+                // Offset na matriz do bloco considerando ghost cells
+                int block_i = i + flag_u;
+                int block_j = j + flag_l;
+                block_data[block_i][block_j] = matrix[start_row + i][start_col + j];
             }
         }
+        
+        // Copiar ghost cells (células vizinhas)
+        // Ghost cell superior
+        if (flag_u) {
+            for (int j = 0; j < num_columns; j++) {
+                int block_j = j + flag_l;
+                block_data[0][block_j] = matrix[start_row - 1][start_col + j];
+            }
+        }
+        
+        // Ghost cell inferior
+        if (flag_d) {
+            for (int j = 0; j < num_columns; j++) {
+                int block_j = j + flag_l;
+                block_data[actual_rows - 1][block_j] = matrix[start_row + num_lines][start_col + j];
+            }
+        }
+        
+        // Ghost cell esquerda
+        if (flag_l) {
+            for (int i = 0; i < num_lines; i++) {
+                int block_i = i + flag_u;
+                block_data[block_i][0] = matrix[start_row + i][start_col - 1];
+            }
+        }
+        
+        // Ghost cell direita
+        if (flag_r) {
+            for (int i = 0; i < num_lines; i++) {
+                int block_i = i + flag_u;
+                block_data[block_i][actual_cols - 1] = matrix[start_row + i][start_col + num_columns];
+            }
+        }
+        
+        // Preencher cantos se necessário (para stencil diagonal, se precisar)
+        if (flag_u && flag_l) {
+            block_data[0][0] = matrix[start_row - 1][start_col - 1];
+        }
+        if (flag_u && flag_r) {
+            block_data[0][actual_cols - 1] = matrix[start_row - 1][start_col + num_columns];
+        }
+        if (flag_d && flag_l) {
+            block_data[actual_rows - 1][0] = matrix[start_row + num_lines][start_col - 1];
+        }
+        if (flag_d && flag_r) {
+            block_data[actual_rows - 1][actual_cols - 1] = matrix[start_row + num_lines][start_col + num_columns];
+        }
+        
+        MatrixBlock *new_block = malloc(sizeof(MatrixBlock));
+        new_block->matrix = block_data;
+        new_block->num_rows = actual_rows;
+        new_block->num_cols = actual_cols;
+        new_block->flag_r = flag_r;
+        new_block->flag_l = flag_l;
+        new_block->flag_u = flag_u;
+        new_block->flag_d = flag_d;
+        new_block->next = NULL;
+        
+        if (matrixQueue->head == NULL) {
+            matrixQueue->head = new_block;
+        } else {
+            MatrixBlock *temp = matrixQueue->head;
+            while (temp->next != NULL) {
+                temp = temp->next;
+            }
+            temp->next = new_block;
+        }
+        matrixQueue->count++;
+    }
+}
+
+// Função para distribuir blocos da matriz para os clientes
+void distribute_matrix_blocks(ClientInfo *clients, int num_clients, BlockQueue *queue) {
+    MatrixBlock *current_block = queue->head;
+    int client_idx = 0;
+    int block_count = 0;
+    
+    printf("\nDistribuindo %d blocos para %d clientes...\n", queue->count, num_clients);
+    
+    while (current_block != NULL) {
+        printf("Enviando bloco %d para Cliente %d (tamanho: %dx%d, flags: U=%d D=%d L=%d R=%d)...\n", 
+               block_count + 1, client_idx + 1,
+               current_block->num_rows, current_block->num_cols,
+               current_block->flag_u, current_block->flag_d,
+               current_block->flag_l, current_block->flag_r);
+        
+        if (send_matrix_block(clients[client_idx].socket_fd, current_block) < 0) {
+            printf("Erro ao enviar bloco para o Cliente %d\n", client_idx + 1);
+        } else {
+            printf("Bloco enviado com sucesso!\n");
+        }
+        
+        current_block = current_block->next;
+        block_count++;
+        client_idx = (client_idx + 1) % num_clients; // Round-robin
     }
     printf("\nTodos os blocos foram distribuídos!\n");
-    
-    // Liberar memória da matriz
-    free_matrix(matrix, total_rows);
 }
 
 // Função para fechar todas as conexões com clientes
@@ -236,32 +264,52 @@ void close_all_clients(ClientInfo *clients, int num_clients) {
     }
 }
 
+// Função para liberar memória da fila de blocos
+void free_block_queue(BlockQueue *queue) {
+    MatrixBlock *current = queue->head;
+    while (current != NULL) {
+        MatrixBlock *next = current->next;
+        // Liberar a matriz do bloco
+        for (int i = 0; i < current->num_rows; i++) {
+            free(current->matrix[i]);
+        }
+        free(current->matrix);
+        free(current);
+        current = next;
+    }
+    free(queue);
+}
+
 int main(){
     FILE *fp;
-    double matrix[IMAGE_SIZE][IMAGE_SIZE];
+    int **matrix;
     int i, j, num_clients, num_blocks, num_lines, num_columns;
 
-    fp = fopen("matriz_2000x2000.txt", "r");
+    // Alocar matriz dinamicamente
+    matrix = malloc(IMAGE_SIZE * sizeof(int *));
+    for (i = 0; i < IMAGE_SIZE; i++) {
+        matrix[i] = malloc(IMAGE_SIZE * sizeof(int));
+    }
+
+    fp = fopen("data/matriz_2000x2000.txt", "r");
     if (fp == NULL) {
         perror("Erro ao abrir arquivo");
+        // Liberar memória antes de sair
+        for (i = 0; i < IMAGE_SIZE; i++) {
+            free(matrix[i]);
+        }
+        free(matrix);
         return 1;
     }
-    // Ler dados da matriz do arquivo
+    
+    printf("Carregando matriz do arquivo...\n");
     for (i = 0; i < IMAGE_SIZE; i++) {
         for (j = 0; j < IMAGE_SIZE; j++) {
-            fscanf(fp, "%lf", &matrix[i][j]);
+            fscanf(fp, "%d", &matrix[i][j]);
         }
     }
     fclose(fp);
-
-    // Inicializar servidor de teste em thread separada
-    int test_server_fd = init_test_server(TEST_PORT);
-    pthread_t test_thread;
-    if (pthread_create(&test_thread, NULL, test_server_thread, &test_server_fd) != 0) {
-        perror("Erro ao criar thread de teste");
-        return 1;
-    }
-    pthread_detach(test_thread); // Deixar thread rodar independentemente
+    printf("Matriz carregada com sucesso!\n\n");
 
     printf("=== Configuração do Servidor ===\n");
     printf("Digite a quantidade de clientes do teste: ");
@@ -277,33 +325,39 @@ int main(){
     printf("Digite a quantidade de colunas por bloco: ");
     scanf("%d", &num_columns);
 
-    divide_matrix_into_blocks(matrix, IMAGE_SIZE, IMAGE_SIZE, num_clients, num_blocks, num_lines, num_columns);
+    BlockQueue *queue = malloc(sizeof(BlockQueue));
+    queue->head = NULL;
+    queue->count = 0;
 
-    // Inicializar servidor
     int server_fd = init_server();
     printf("\nServidor inicializado e escutando na porta %d\n", PORT);
-    
-    // Array para armazenar informações dos clientes
+
+    divide_matrix(num_blocks, num_columns, num_lines, matrix, queue);
+
     ClientInfo *clients = (ClientInfo *)malloc(num_clients * sizeof(ClientInfo));
-    // Aguardar todos os clientes se conectarem
     if (wait_for_clients(server_fd, clients, num_clients) < 0) {
         printf("Erro ao aguardar clientes.\n");
         free(clients);
         close_server(server_fd);
-        close_server(test_server_fd);
         return 1;
     }
     
-    // Distribuir blocos da matriz para os clientes
-    distribute_matrix_blocks(clients, num_clients, num_blocks, num_lines, num_columns);
+    distribute_matrix_blocks(clients, num_clients, queue);
     
-    // Fechar todas as conexões
     printf("\nFechando conexões...\n");
     close_all_clients(clients, num_clients);
     free(clients);
     
+    // Liberar memória da fila
+    free_block_queue(queue);
+    
+    // Liberar memória da matriz
+    for (i = 0; i < IMAGE_SIZE; i++) {
+        free(matrix[i]);
+    }
+    free(matrix);
+    
     close_server(server_fd);
-    close_server(test_server_fd);
     printf("Servidor encerrado.\n");
     
     return 0;
