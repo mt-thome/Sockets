@@ -1,0 +1,2 @@
+/home/mario/computaria/2sem-2025/pcp/Sockets/build/CMakeFiles/edit_cache.dir
+/home/mario/computaria/2sem-2025/pcp/Sockets/build/CMakeFiles/rebuild_cache.dir
