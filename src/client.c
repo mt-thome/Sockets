@@ -21,10 +21,7 @@ int main() {
     int socket_fd;
     struct sockaddr_in server_addr;
     // dimensions is [rows][colluns][up][down][left][rigth]
-    int dimensions[6] = {0};
-    int **matrix;
-
-    const char  *msg = "Client message invited!";
+    int dimensions[6] = {0}, **matrix, connection_flag=-1;
 
     if((socket_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0){
         perror("Error creating socket");
@@ -42,83 +39,91 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    if(connect(socket_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+    if(connection_flag=connect(socket_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         perror("Conexion error");
         close(socket_fd);
         exit(EXIT_FAILURE);
     }
-
     printf("Connected sucssecfully with server in %s:%d\n", SERVER_IP, SERVER_PORT);
 
-    printf("Sending message: '%s'\n", msg);
-    write(socket_fd, msg, strlen(msg));
-
-    int valread = read(socket_fd, dimensions, 2*sizeof(int));
-    // dimensions is [rows][colluns][up][down][left][rigth]
-    
-    if(valread > 0){
-        // declaration of awnser matrix
-        int a_matrix[dimensions[rows]][dimensions[coll]];
-
-        // Declaration of matrix received
-        matrix = malloc((dimensions[rows]+2)*sizeof(int *));
-        for(int i=0;i<dimensions[rows]+2;i++)
-            matrix[i] = malloc((dimensions[coll])*sizeof(int));
+    while(connection_flag==0){
+        printf("Getting image from server\n");
+        int valread = read(socket_fd, dimensions, 2*sizeof(int));
+        // dimensions is [rows][colluns][up][down][left][rigth]
         
-        // Declaration of aux variables to ghost border
-        int m=1, n=1, m_max=dimensions[rows]-1, n_max=dimensions[coll]-1;
+        if(valread > 0){
+            // declaration of awnser matrix
+            int a_matrix[dimensions[rows]][dimensions[coll]];
 
-        // Treating these variables to ghost border
-        if(dimensions[up]>0)
-            m--;
-        if(dimensions[down]>0)
-            m_max++;
-        if(dimensions[left]>0)
-            n--;
-        if(dimensions[rigth]>0)
-            n_max++;
+            // Declaration of matrix received
+            matrix = malloc((dimensions[rows]+2)*sizeof(int *));
+            for(int i=0;i<dimensions[rows]+2;i++)
+                matrix[i] = malloc((dimensions[coll])*sizeof(int));
+            
+            // Declaration of aux variables to ghost border
+            int m=1, n=1, m_max=dimensions[rows]-1, n_max=dimensions[coll]-1;
 
-        // Getting image from server
-        for(int i=m;i<m_max;i++){
-            for(int j=n;j<n_max;j++){
-                int val_matrix = read(socket_fd, matrix[i][j], sizeof(int));
-                if(val_matrix < 0){
-                    perror("Invalid number read from server");
-                    exit(EXIT_FAILURE);
+            // Treating these variables to ghost border
+            if(dimensions[up]>0)
+                m--;
+            if(dimensions[down]>0)
+                m_max++;
+            if(dimensions[left]>0)
+                n--;
+            if(dimensions[rigth]>0)
+                n_max++;
+
+            // Getting image from server
+            for(int i=m;i<m_max;i++){
+                for(int j=n;j<n_max;j++){
+                    int val_matrix = read(socket_fd, &matrix[i][j], sizeof(int));
+                    if(val_matrix < 0){
+                        perror("Invalid number read from server");
+                        exit(EXIT_FAILURE);
+                    }
                 }
             }
-        }
 
-        // Treating ghost border
-        if(dimensions[up]==0){
-            for(int j=1;j<n_max;j++)
-                matrix[0][j] = matrix[1][j];
-        }
-        if(dimensions[down]==0){
-            for(int j=1;j<n_max;j++)
-                matrix[m_max+1][j] = matrix[m_max][j];
-        }
-        if(dimensions[left]==0){
-            for(int j=1;j<m_max;j++)
-                matrix[j][0] = matrix[j][1];
-        }
-        if(dimensions[rigth]==0){
-            for(int j=1;j<m_max;j++)
-                matrix[j][n_max+1] = matrix[j][n_max];
-        }
-
-        // dimensions is [rows][colluns][up][down][left][rigth]        
-        // pode dar errado isso aki
-        for(int i=0;i<dimensions[rows];i++){
-            for(int j=0;j<dimensions[coll];j++){
-                a_matrix[i][j] = (int)(matrix[i][j] + matrix[i+1][j] + matrix[i-1][j] + matrix[i][j-1] + matrix[i][j+1])/5;
+            // Treating ghost border
+            if(dimensions[up]==0){
+                for(int j=1;j<n_max;j++)
+                    matrix[0][j] = matrix[1][j];
             }
-        }
+            if(dimensions[down]==0){
+                for(int j=1;j<n_max;j++)
+                    matrix[m_max+1][j] = matrix[m_max][j];
+            }
+            if(dimensions[left]==0){
+                for(int j=1;j<m_max;j++)
+                    matrix[j][0] = matrix[j][1];
+            }
+            if(dimensions[rigth]==0){
+                for(int j=1;j<m_max;j++)
+                    matrix[j][n_max+1] = matrix[j][n_max];
+            }
 
-        send(socket_fd, a_matrix, sizeof(int)*dimensions[rows]*dimensions[coll], 0);
-    }
-    else{
-        printf("Server dont send a anwser or closed connection.\n");
+            printf("Processing...\n");
+            // dimensions is [rows][colluns][up][down][left][rigth]        
+
+            int k=1, l=1;
+            for(int i=0;i<dimensions[rows] && k<dimensions[rows];i++){
+                printf("Passou o 1 for\n");
+                for(int j=0;j<dimensions[coll] && l<dimensions[coll];j++){
+                    printf("Passou o 2 for\n");
+                    a_matrix[i][j] = (int)((matrix[k][l] + matrix[k+1][l] + matrix[k-1][l] + matrix[k][l-1] + matrix[k][l+1])/5);
+                    printf("finalizou o 2 for\n");
+                    l++;
+                }
+                l=1;
+                k++;
+            }
+
+            printf("Sending image to server...\n");
+            send(socket_fd, a_matrix, sizeof(int)*dimensions[rows]*dimensions[coll], 0);
+        }
+        else{
+            printf("Server dont send a anwser or closed connection.\n");
+        }
     }
 
     close(socket_fd);

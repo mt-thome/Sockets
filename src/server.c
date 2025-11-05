@@ -364,7 +364,7 @@ int main(){
         matrix[i] = malloc(IMAGE_SIZE * sizeof(int));
     }
 
-    fp = fopen("data/matriz_2000x2000.txt", "r");
+    fp = fopen("../data/matriz_2000x2000.txt", "r");
     if (fp == NULL) {
         perror("Erro ao abrir arquivo");
         for (i = 0; i < IMAGE_SIZE; i++) {
