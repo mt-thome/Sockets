@@ -1,28 +1,32 @@
 # Projeto Sockets - Programação Concorrente e Paralela
+Este projeto implementa um sistema cliente-servidor em C para processamento paralelo de imagens usando sockets TCP. O servidor distribui blocos de uma matriz 2000x2000 para múltiplos clientes que aplicam um filtro de suavização (stencil de 5 pontos) e retornam os resultados processados.
 
-Este projeto implementa um sistema cliente-servidor em C para paralelizar uma tarefa de processamento de imagem aplicando um filtro de suavização (stencil de cinco pontos). A comunicação entre os processos é realizada inteiramente via Sockets TCP.
+## Objetivo
 
-O objetivo é processar uma matriz 2000x2000 de inteiros aplicando um filtro de suavização (stencil de cinco pontos). O servidor divide a matriz em blocos e os distribui para múltiplos clientes, que processam os blocos em paralelo e os devolvem. O servidor, então, monta a imagem processada final.
+Processar uma matriz 2000x2000 de inteiros aplicando um filtro de suavização (média dos 5 pontos: centro + 4 vizinhos cardeais). O servidor divide a matriz em blocos com **ghost cells**, distribui para clientes que processam em paralelo, e remonta a matriz final.
 
 ## Estrutura do Projeto
 
 ```
 C/Sockets/
-├── bin/                    # Executáveis compilados (criado após compilação)
-├── data/                   # Arquivos de entrada
-│   └── matriz_2000x2000.txt  # Matriz de entrada (2000x2000 inteiros)
-├── src/                    # Código-fonte
-│   ├── server.c            # Implementação do servidor
-│   └── client.c            # Implementação do cliente (em desenvolvimento)
-├── Makefile                # Arquivo para compilação
-└── README.md               # Este arquivo
+├── bin/                        # Executáveis compilados
+│   ├── server                  # Servidor
+│   └── client                  # Cliente
+├── data/                       # Dados de entrada
+│   └── matriz_2000x2000.txt    # Matriz 2000x2000 de inteiros
+├── src/                        # Código-fonte
+│   ├── server.c                # Implementação do servidor
+│   └── client.c                # Implementação do cliente
+├── tests/                      # Scripts de teste
+│   └── test_simple.sh          # Teste básico
+└── README.md                   # Esta documentação
 ```
 
 ## Pré-requisitos
 
-Para compilar e executar este projeto, você precisará de:
-* `gcc`: Compilador C
-* Sistema operacional Linux/Unix
+- **gcc**: Compilador C
+- **Sistema**: Linux/Unix
+- **Bibliotecas**: POSIX (padrão em sistemas Unix)
 
 ## Servidor - Funcionalidades Implementadas
 
@@ -84,89 +88,157 @@ O servidor divide a matriz em blocos configuráveis e adiciona **células fantas
 ### Compilar o Servidor
 
 ```bash
-gcc -Wall -o bin/server src/server.c
-```
+# Compilar servidor
+gcc -o bin/server src/server.c -Wall -Wextra
 
-### Compilar o Cliente 
+# Compilar cliente
+gcc -o bin/client src/client.c -Wall -Wextra
 
-```bash
-gcc -Wall -o bin/client src/client.c
+# Ou compilar ambos de uma vez
+gcc -o bin/server src/server.c -Wall -Wextra && \
+gcc -o bin/client src/client.c -Wall -Wextra
 ```
 
 ## Como Executar
 
-### 1. Gerar Arquivo de Matriz (Opcional)
+### 1. Verificar Arquivo de Matriz
 
-Se você não tiver o arquivo `data/matriz_2000x2000.txt`, pode gerar um com valores aleatórios:
+O arquivo `data/matriz_2000x2000.txt` deve existir com 2000 linhas de 2000 inteiros cada.
 
+**Gerar arquivo de teste (opcional):**
 ```bash
 python3 -c "
 import random
 with open('data/matriz_2000x2000.txt', 'w') as f:
     for i in range(2000):
-        for j in range(2000):
-            f.write(str(random.randint(0, 255)) + ' ')
-        f.write('\n')
-print('Arquivo criado!')
+        linha = ' '.join(str(random.randint(0, 255)) for _ in range(2000))
+        f.write(linha + '\n')
+print('Matriz gerada!')
 "
 ```
 
 ### 2. Iniciar o Servidor
 
-Em um terminal, inicie o servidor:
-
+Em um terminal:
 ```bash
+cd /home/user/Projetos/C/Sockets
 ./bin/server
 ```
 
-O servidor solicitará as seguintes configurações:
-- **Quantidade de clientes**: número de clientes que irão se conectar (1-10)
-- **Quantidade de blocos**: número total de blocos a serem criados
-- **Linhas por bloco**: altura de cada bloco (sem contar ghost cells)
-- **Colunas por bloco**: largura de cada bloco (sem contar ghost cells)
-
-**Exemplo de entrada:**
+**Configuração interativa:**
 ```
+=== Configuração do Servidor ===
 Digite a quantidade de clientes do teste: 2
 Digite a quantidade de blocos por cliente: 4
-Digite a quantidade de linhas por bloco: 100
-Digite a quantidade de colunas por bloco: 100
+Digite a quantidade de linhas por bloco: 500
+Digite a quantidade de colunas por bloco: 500
 ```
 
 O servidor então:
-1. Carrega a matriz do arquivo
-2. Aguarda a conexão dos clientes especificados
-3. Divide a matriz em blocos (adicionando ghost cells automaticamente)
-4. **Marca o tempo inicial**
-5. Distribui os blocos entre os clientes (round-robin)
-6. Aguarda o recebimento de todos os blocos processados
-7. Remonta a matriz descartando as ghost cells
-8. **Marca o tempo final e exibe estatísticas**
-9. Fecha as conexões
+1. ✓ Carrega matriz 2000×2000
+2. ✓ Cria 4 blocos com ghost cells
+3. Aguarda 2 clientes conectarem...
 
-**Exemplo de saída:**
-```
-=== ESTATÍSTICAS ===
-Tempo total de processamento: 2.345678 segundos
+### 3. Iniciar Cliente(s)
 
-Fechando conexões...
-```
-
-### 3. Iniciar o(s) Cliente(s)
-
-Para cada cliente que você deseja executar, abra um **novo terminal** e conecte-se ao servidor. (Para testes locais, use o IP `127.0.0.1`).
+**Para cada cliente**, abra um **novo terminal**:
 
 ```bash
-# Exemplo para iniciar um cliente
-./bin/cliente 127.0.0.1
+cd /home/user/Projetos/C/Sockets
+./bin/client
 ```
-Você pode iniciar múltiplos clientes em múltiplos terminais para executar o processamento paralelo.
 
-## Detalhes de Implementação do Servidor
+**Saída do cliente:**
+```
+Conectado com sucesso ao servidor 127.0.0.1:8080
+
+=== Bloco 1 recebido ===
+Dimensões: 501x501 (flags: U=0 D=1 L=0 R=1)
+Recebendo dados da matriz...
+Matriz recebida com sucesso!
+Processando área útil: 500x500...
+Processamento concluído!
+Enviando resultado ao servidor...
+Resultado enviado com sucesso!
+
+=== Bloco 2 recebido ===
+...
+
+Servidor fechou a conexão. Total de blocos processados: 2
+Cliente encerrado.
+```
+
+### 4. Resultado do Servidor
+
+Após todos os clientes processarem:
+
+```
+=== MODO ASSÍNCRONO (2 clientes) ===
+Distribuindo 4 blocos...
+...
+Cliente 1 está pronto! Recebendo bloco 1...
+Cliente 2 está pronto! Recebendo bloco 2...
+Cliente 1 está pronto! Recebendo bloco 3...
+Cliente 2 está pronto! Recebendo bloco 4...
+
+Todos os blocos processados foram recebidos e remontados! (4/4)
+
+=== ESTATÍSTICAS ===
+Tempo total de processamento: 0.011211 segundos
+
+Fechando conexões...
+Servidor encerrado.
+```
+
+## Exemplo de Teste Completo
+
+### Teste com 1 Cliente (Modo Síncrono)
+
+**Terminal 1 - Servidor:**
+```bash
+./bin/server
+# Input: 1, 1, 500, 500
+```
+
+**Terminal 2 - Cliente:**
+```bash
+./bin/client
+```
+
+**Resultado esperado:**
+- ✓ Modo síncrono (ping-pong) ativado
+- ✓ 1 bloco processado
+- ✓ Tempo: ~0.003 segundos
+
+### Teste com 2 Clientes (Modo Assíncrono com select)
+
+**Terminal 1 - Servidor:**
+```bash
+./bin/server
+# Input: 2, 4, 500, 500
+```
+
+**Terminal 2 - Cliente 1:**
+```bash
+./bin/client
+```
+
+**Terminal 3 - Cliente 2:**
+```bash
+./bin/client
+```
+
+**Resultado esperado:**
+- ✓ Modo assíncrono ativado
+- ✓ 4 blocos distribuídos (round-robin)
+- ✓ Recepção com `select()` (ordem flexível)
+- ✓ Tempo: ~0.011 segundos
+
+## Arquitetura e Implementação
 
 ### Estruturas de Dados
 
-**ClientInfo**: Armazena informações de cada cliente conectado
+**ClientInfo** - Informações de cliente conectado:
 ```c
 typedef struct {
     int socket_fd;              // Socket do cliente
@@ -175,87 +247,132 @@ typedef struct {
 } ClientInfo;
 ```
 
-**MatrixBlock**: Representa um bloco da matriz com ghost cells
+**MatrixBlock** - Representa um bloco da matriz com ghost cells:
 ```c
 typedef struct MatrixBlock {
-    int **matrix;               // Dados do bloco
-    int num_rows;               // Linhas (com ghost cells)
-    int num_cols;               // Colunas (com ghost cells)
-    int flag_r, flag_l;         // Flags para ghost cells horizontais
-    int flag_u, flag_d;         // Flags para ghost cells verticais
-    struct MatrixBlock *next;   // Próximo bloco na fila
+    int **matrix;               // Dados do bloco (COM ghost cells)
+    int num_rows;               // Linhas totais (COM ghost cells)
+    int num_cols;               // Colunas totais (COM ghost cells)
+    int flag_u, flag_d;         // Flags ghost cells vertical
+    int flag_l, flag_r;         // Flags ghost cells horizontal
+    struct MatrixBlock *next;   // Próximo bloco (lista encadeada)
 } MatrixBlock;
 ```
 
-**BlockQueue**: Fila encadeada de blocos
+**BlockQueue** - Fila de blocos:
 ```c
 typedef struct {
-    MatrixBlock *head;          // Primeiro bloco da fila
-    int count;                  // Número de blocos na fila
+    MatrixBlock *head;          // Primeiro bloco
+    int count;                  // Total de blocos
 } BlockQueue;
 ```
 
-### Funções Principais
+### Funções Principais do Servidor
 
-1. **`init_server()`**: Inicializa o socket do servidor na porta 8080
-2. **`wait_for_clients()`**: Aceita conexões de N clientes
-3. **`divide_matrix()`**: Divide a matriz em blocos e adiciona ghost cells
-4. **`send_matrix_block()`**: Envia um bloco (header + dados) para o cliente
-5. **`distribute_matrix_blocks()`**: Distribui blocos entre clientes (round-robin)
-6. **`receive_processed_block()`**: Recebe um bloco processado linha por linha do cliente
-7. **`receive_results_from_clients()`**: Recebe todos os blocos processados e remonta a matriz
-8. **`free_block_queue()`**: Libera toda a memória alocada
+| Função | Descrição |
+|--------|-----------|
+| `init_server()` | Cria socket TCP na porta 8080, habilita SO_REUSEADDR |
+| `wait_for_clients()` | Aceita N conexões de clientes via `accept()` |
+| `divide_matrix()` | Divide matriz em blocos e adiciona ghost cells |
+| `send_matrix_block()` | Envia header (6 ints) + dados linha por linha |
+| `process_single_client_sync()` | Protocolo ping-pong para 1 cliente |
+| `distribute_matrix_blocks()` | Distribui blocos em round-robin (múltiplos clientes) |
+| `receive_processed_block()` | Recebe matriz linha por linha com `MSG_WAITALL` |
+| `receive_results_from_clients()` | Usa `select()` para receber de qualquer cliente pronto |
+| `free_block_queue()` | Libera toda memória alocada |
 
-### Algoritmo de Ghost Cells
+### Protocolo Adaptativo
 
-Para cada bloco na posição `(block_row, block_col)`:
+**1 Cliente → Modo Síncrono (ping-pong):**
+```
+Servidor                Cliente
+   |--[Bloco 1 COM ghosts]-->|
+   |                         | (processa)
+   |<-[Result 1 SEM ghosts]--|
+   |--[Bloco 2 COM ghosts]-->|
+   |                         | (processa)
+   |<-[Result 2 SEM ghosts]--|
+```
 
-1. **Determinar flags**: verificar se existem vizinhos em cada direção
-2. **Calcular dimensões**: `actual_size = base_size + ghost_cells`
-3. **Copiar dados centrais**: região original do bloco
-4. **Copiar ghost cells**: 
-   - Superior: linha `start_row - 1` da matriz original
-   - Inferior: linha `start_row + num_lines` da matriz original
-   - Esquerda: coluna `start_col - 1` da matriz original
-   - Direita: coluna `start_col + num_columns` da matriz original
-5. **Preencher cantos**: intersecções das ghost cells (se aplicável)
+**N Clientes → Modo Assíncrono (select):**
+```
+Servidor                Cliente 1          Cliente 2
+   |--[Bloco 1]---------->|                     |
+   |--[Bloco 2]-------------------------->|     |
+   |--[Bloco 3]---------->|                     |
+   |--[Bloco 4]-------------------------->|     |
+   |                      | (processa)         | (processa)
+   |                                            |
+   |  select() monitora ambos os sockets       |
+   |                                            |
+   |<-[Result 2]---------------------------| ✓ Pronto primeiro!
+   |<-[Result 1]----------|                     |
+   |<-[Result 4]---------------------------|     |
+   |<-[Result 3]----------|                     |
+```
 
-### Configuração da Rede
+## Configuração de Rede
 
 - **Porta**: 8080
 - **Protocolo**: TCP (SOCK_STREAM)
-- **Máximo de clientes**: 10
-- **Opção SO_REUSEADDR**: Habilitada para reutilização rápida da porta
-
-### Fluxo de Execução Completo
-
-```
-1. Servidor carrega matriz 2000x2000
-2. Divide em blocos com ghost cells
-3. Aguarda N clientes conectarem
-4. [TEMPO INICIAL] ⏱️
-5. Envia blocos (round-robin)
-6. Aguarda blocos processados
-7. Remonta matriz (descarta ghost cells)
-8. [TEMPO FINAL] ⏱️
-9. Exibe estatísticas
-10. Fecha conexões
-```
+- **Endereço**: 0.0.0.0 (aceita qualquer interface)
+- **Max clientes**: 10
+- **Flags socket**: 
+  - `SO_REUSEADDR`: Permite reutilização rápida da porta
+  - `MSG_WAITALL`: Garante recepção completa dos dados
 
 ## Notas Técnicas
 
-- **Alocação dinâmica**: A matriz 2000x2000 é alocada no heap para evitar stack overflow
-- **Liberação de memória**: Todas as estruturas são liberadas adequadamente ao final
-- **Cada bloco tem cópia própria**: Não há compartilhamento de dados entre blocos
-- **Ghost cells evitam comunicação**: Clientes não precisam trocar dados entre si
-- **Medição de tempo precisa**: Usa `clock_gettime(CLOCK_MONOTONIC)` com precisão de nanossegundos
-- **Protocolo confiável**: TCP garante entrega ordenada dos dados
-- **Recepção com MSG_WAITALL**: Garante recebimento completo de cada linha da matriz
+### Decisões de Design
 
-## Testes e Relatório
+1. **Protocolo Adaptativo**
+   - 1 cliente → síncrono (evita confusão no canal único)
+   - N clientes → assíncrono com `select()` (maximiza paralelismo)
 
-O projeto requer a medição de tempo para 14 cenários de teste diferentes, variando o número de clientes e a forma como a imagem é dividida.
+2. **Ghost Cells**
+   - Enviadas COM ghost cells (contexto para stencil)
+   - Recebidas SEM ghost cells (reduz tráfego de retorno)
 
-Para automatizar a execução desses testes, utilize o script `tests/run_tests.sh` (conforme definido na estrutura do projeto). Ele executará os 14 cenários e salvará os tempos de execução em `output/tempos_execucao.csv`.
+3. **Alocação de Memória**
+   - Matriz 2000×2000 no heap (~16MB, evita stack overflow)
+   - Cada bloco tem cópia independente (sem compartilhamento)
 
-O relatório final (`relatorio.pdf`) contém a análise e comparação de desempenho desses testes, conforme solicitado.
+4. **Sincronização**
+   - `select()` evita bloqueio em cliente lento
+   - `MSG_WAITALL` garante recepção atômica de dados
+
+## Testes de Desempenho
+
+### Cenários Recomendados
+
+O projeto suporta testes variando:
+- **Número de clientes**: 1, 2, 4, 8
+- **Divisão da matriz**: diferentes tamanhos de bloco
+- **Total de blocos**: 1, 4, 16, 64
+
+Exemplos:
+```bash
+# Teste 1: 1 cliente, 1 bloco 2000x2000
+# Input: 1, 1, 2000, 2000
+
+# Teste 2: 2 clientes, 4 blocos 1000x1000
+# Input: 2, 4, 1000, 1000
+
+# Teste 3: 4 clientes, 16 blocos 500x500
+# Input: 4, 16, 500, 500
+
+# Teste 4: 8 clientes, 64 blocos 250x250
+# Input: 8, 64, 250, 250
+```
+
+### Análise de Resultados
+
+- **Speedup esperado**: Próximo linear até 4 clientes
+- **Overhead de comunicação**: Aumenta com mais blocos pequenos
+- **Select() eficiente**: Evita gargalo na recepção
+
+## Referências
+
+- **POSIX Sockets API**: `man 2 socket`, `man 2 select`
+- **TCP Protocol**: RFC 793
+- **Clock functions**: `man 2 clock_gettime`

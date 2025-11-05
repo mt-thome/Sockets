@@ -6,127 +6,143 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#define BUFFER_SIZE 8192
-#define IMAGE_SIZE 2000
 #define SERVER_PORT 8080
-#define rows 0
-#define coll 1
-#define up 2
-#define down 3
-#define left 4
-#define rigth 5
 #define SERVER_IP "127.0.0.1"
 
 int main() {
     int socket_fd;
     struct sockaddr_in server_addr;
-    // dimensions is [rows][colluns][up][down][left][rigth]
-    int dimensions[6] = {0}, **matrix, connection_flag=-1;
 
     if((socket_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0){
-        perror("Error creating socket");
+        perror("Erro ao criar socket");
         exit(EXIT_FAILURE);
     }
 
     memset(&server_addr, 0, sizeof(server_addr));
-
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(SERVER_PORT);
 
     if(inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr) <= 0){
-        printf("\nIp address not suported or invalid");
+        printf("Endereço IP inválido\n");
         close(socket_fd);
         exit(EXIT_FAILURE);
     }
 
-    if(connection_flag=connect(socket_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        perror("Conexion error");
+    if(connect(socket_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Erro ao conectar");
         close(socket_fd);
         exit(EXIT_FAILURE);
     }
-    printf("Connected sucssecfully with server in %s:%d\n", SERVER_IP, SERVER_PORT);
+    printf("Conectado com sucesso ao servidor %s:%d\n", SERVER_IP, SERVER_PORT);
 
-    while(connection_flag==0){
-        printf("Getting image from server\n");
-        int valread = read(socket_fd, dimensions, 2*sizeof(int));
-        // dimensions is [rows][colluns][up][down][left][rigth]
+    int blocks_processed = 0;
+    while(1){
+        int header[6];
+        ssize_t bytes_read = recv(socket_fd, header, sizeof(header), MSG_WAITALL);
         
-        if(valread > 0){
-            // declaration of awnser matrix
-            int a_matrix[dimensions[rows]][dimensions[coll]];
-
-            // Declaration of matrix received
-            matrix = malloc((dimensions[rows]+2)*sizeof(int *));
-            for(int i=0;i<dimensions[rows]+2;i++)
-                matrix[i] = malloc((dimensions[coll])*sizeof(int));
-            
-            // Declaration of aux variables to ghost border
-            int m=1, n=1, m_max=dimensions[rows]-1, n_max=dimensions[coll]-1;
-
-            // Treating these variables to ghost border
-            if(dimensions[up]>0)
-                m--;
-            if(dimensions[down]>0)
-                m_max++;
-            if(dimensions[left]>0)
-                n--;
-            if(dimensions[rigth]>0)
-                n_max++;
-
-            // Getting image from server
-            for(int i=m;i<m_max;i++){
-                for(int j=n;j<n_max;j++){
-                    int val_matrix = read(socket_fd, &matrix[i][j], sizeof(int));
-                    if(val_matrix < 0){
-                        perror("Invalid number read from server");
-                        exit(EXIT_FAILURE);
-                    }
-                }
+        if(bytes_read <= 0){
+            if(bytes_read == 0){
+                printf("\nServidor fechou a conexão. Total de blocos processados: %d\n", blocks_processed);
+            } else {
+                perror("Erro ao receber header");
             }
-
-            // Treating ghost border
-            if(dimensions[up]==0){
-                for(int j=1;j<n_max;j++)
-                    matrix[0][j] = matrix[1][j];
-            }
-            if(dimensions[down]==0){
-                for(int j=1;j<n_max;j++)
-                    matrix[m_max+1][j] = matrix[m_max][j];
-            }
-            if(dimensions[left]==0){
-                for(int j=1;j<m_max;j++)
-                    matrix[j][0] = matrix[j][1];
-            }
-            if(dimensions[rigth]==0){
-                for(int j=1;j<m_max;j++)
-                    matrix[j][n_max+1] = matrix[j][n_max];
-            }
-
-            printf("Processing...\n");
-            // dimensions is [rows][colluns][up][down][left][rigth]        
-
-            int k=1, l=1;
-            for(int i=0;i<dimensions[rows] && k<dimensions[rows];i++){
-                printf("Passou o 1 for\n");
-                for(int j=0;j<dimensions[coll] && l<dimensions[coll];j++){
-                    printf("Passou o 2 for\n");
-                    a_matrix[i][j] = (int)((matrix[k][l] + matrix[k+1][l] + matrix[k-1][l] + matrix[k][l-1] + matrix[k][l+1])/5);
-                    printf("finalizou o 2 for\n");
-                    l++;
-                }
-                l=1;
-                k++;
-            }
-
-            printf("Sending image to server...\n");
-            send(socket_fd, a_matrix, sizeof(int)*dimensions[rows]*dimensions[coll], 0);
+            break;
         }
-        else{
-            printf("Server dont send a anwser or closed connection.\n");
+        
+        int num_rows = header[0];
+        int num_cols = header[1];
+        int flag_u = header[2];
+        int flag_d = header[3];
+        int flag_l = header[4];
+        int flag_r = header[5];
+        
+        printf("\n=== Bloco %d recebido ===\n", blocks_processed + 1);
+        printf("Dimensões: %dx%d (flags: U=%d D=%d L=%d R=%d)\n", num_rows, num_cols, flag_u, flag_d, flag_l, flag_r);
+        
+        int **matrix = malloc(num_rows * sizeof(int *));
+        for(int i = 0; i < num_rows; i++){
+            matrix[i] = malloc(num_cols * sizeof(int));
         }
+        
+        printf("Recebendo dados da matriz...\n");
+        for(int i = 0; i < num_rows; i++){
+            bytes_read = recv(socket_fd, matrix[i], num_cols * sizeof(int), MSG_WAITALL);
+            if(bytes_read != num_cols * sizeof(int)){
+                fprintf(stderr, "Erro ao receber linha %d (esperado: %ld bytes, recebido: %ld bytes)\n", 
+                        i, num_cols * sizeof(int), bytes_read);
+                for(int j = 0; j <= i; j++){
+                    free(matrix[j]);
+                }
+                free(matrix);
+                close(socket_fd);
+                exit(EXIT_FAILURE);
+            }
+        }
+        printf("Matriz recebida com sucesso!\n");
+        
+        int start_i = flag_u ? 1 : 0;
+        int end_i = flag_d ? num_rows - 1 : num_rows;
+        int start_j = flag_l ? 1 : 0;
+        int end_j = flag_r ? num_cols - 1 : num_cols;
+        
+        int result_rows = end_i - start_i;
+        int result_cols = end_j - start_j;
+        
+        printf("Processando área útil: %dx%d (índices de [%d:%d, %d:%d])...\n", 
+               result_rows, result_cols, start_i, end_i, start_j, end_j);
+        
+        int **result = malloc(result_rows * sizeof(int *));
+        for(int i = 0; i < result_rows; i++){
+            result[i] = malloc(result_cols * sizeof(int));
+        }
+        
+        for(int i = start_i; i < end_i; i++){
+            for(int j = start_j; j < end_j; j++){
+                int center = matrix[i][j];
+                int top    = (i > 0) ? matrix[i-1][j] : center;           
+                int bottom = (i < num_rows-1) ? matrix[i+1][j] : center;  
+                int left   = (j > 0) ? matrix[i][j-1] : center;           
+                int right  = (j < num_cols-1) ? matrix[i][j+1] : center;  
+                
+                int sum = center + top + bottom + left + right;
+                result[i - start_i][j - start_j] = sum / 5;
+            }
+        }
+        printf("Processamento concluído!\n");
+        
+        printf("Enviando resultado ao servidor...\n");
+        for(int i = 0; i < result_rows; i++){
+            ssize_t bytes_sent = send(socket_fd, result[i], result_cols * sizeof(int), 0);
+            if(bytes_sent != result_cols * sizeof(int)){
+                fprintf(stderr, "Erro ao enviar linha %d\n", i);
+                for(int j = 0; j < num_rows; j++){
+                    free(matrix[j]);
+                }
+                free(matrix);
+                for(int j = 0; j < result_rows; j++){
+                    free(result[j]);
+                }
+                free(result);
+                close(socket_fd);
+                exit(EXIT_FAILURE);
+            }
+        }
+        printf("Resultado enviado com sucesso!\n");
+        
+        for(int i = 0; i < num_rows; i++){
+            free(matrix[i]);
+        }
+        free(matrix);
+        
+        for(int i = 0; i < result_rows; i++){
+            free(result[i]);
+        }
+        free(result);
+        
+        blocks_processed++;
     }
 
     close(socket_fd);
-
+    printf("Cliente encerrado.\n");
     return 0;
 }

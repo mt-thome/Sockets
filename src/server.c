@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <time.h>
@@ -35,6 +36,13 @@ typedef struct {
     MatrixBlock *head;
     int count;
 } BlockQueue;
+
+// Estrutura para rastrear blocos pendentes por cliente
+typedef struct {
+    int *block_indices;  
+    int count;           
+    int received;        
+} ClientBlocks;
 
 // Função para inicializar o servidor
 int init_server(){
@@ -230,13 +238,98 @@ void divide_matrix(int num_blocks, int num_columns, int num_lines, int **matrix,
     }
 }
 
-// Função para distribuir blocos da matriz para os clientes
+// Função para receber um bloco processado de um cliente
+int receive_processed_block(int client_socket, int **block_buffer, int num_rows, int num_cols) {
+    for (int i = 0; i < num_rows; i++) {
+        ssize_t bytes_received = recv(client_socket, block_buffer[i], num_cols * sizeof(int), MSG_WAITALL);
+        size_t expected_bytes = num_cols * sizeof(int);
+        
+        if (bytes_received < 0) {
+            perror("Erro ao receber linha do bloco processado");
+            return -1;
+        }
+        if ((size_t)bytes_received != expected_bytes) {
+            fprintf(stderr, "Erro: recebido %zd bytes, esperado %zu bytes\n", bytes_received, expected_bytes);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+// Função para distribuir blocos E receber resultados para 1 cliente
+void process_single_client_sync(ClientInfo *client, BlockQueue *queue, int **matrix, int num_lines, int num_columns) {
+    MatrixBlock *current_block = queue->head;
+    int block_count = 0;
+    
+    printf("\n=== MODO SÍNCRONO (1 cliente) ===\n");
+    printf("Processando %d blocos em modo ping-pong...\n", queue->count);
+    
+    while (current_block != NULL) {
+        // ENVIAR bloco (COM ghost cells)
+        printf("Enviando bloco %d para Cliente 1 (tamanho: %dx%d, flags: U=%d D=%d L=%d R=%d)...\n", 
+               block_count + 1,
+               current_block->num_rows, current_block->num_cols,
+               current_block->flag_u, current_block->flag_d,
+               current_block->flag_l, current_block->flag_r);
+        
+        if (send_matrix_block(client->socket_fd, current_block) < 0) {
+            printf("Erro ao enviar bloco %d\n", block_count + 1);
+            current_block = current_block->next;
+            block_count++;
+            continue;
+        }
+        printf("Bloco %d enviado!\n", block_count + 1);
+        
+        // RECEBER bloco processado IMEDIATAMENTE (SEM ghost cells - só área útil)
+        printf("Aguardando bloco processado %d...\n", block_count + 1);
+        
+        // Alocar buffer para receber resultado (SEM ghost cells)
+        int **processed_block = malloc(num_lines * sizeof(int *));
+        for (int i = 0; i < num_lines; i++) {
+            processed_block[i] = malloc(num_columns * sizeof(int));
+        }
+
+        if (receive_processed_block(client->socket_fd, processed_block, num_lines, num_columns) < 0) {
+            printf("Erro ao receber bloco processado %d\n", block_count + 1);
+        } else {
+            printf("Bloco %d recebido e processado!\n", block_count + 1);
+            
+            // Remontar na matriz original
+            int div_h = IMAGE_SIZE / num_lines;
+            int div_v = IMAGE_SIZE / num_columns;
+            int block_row = (block_count / div_v) % div_h;
+            int block_col = block_count % div_v;
+            
+            int start_row = block_row * num_lines;
+            int start_col = block_col * num_columns;
+            
+            // Copiar resultado diretamente (SEM offset, pois já não tem ghost cells)
+            for (int i = 0; i < num_lines; i++) {
+                for (int j = 0; j < num_columns; j++) {
+                    matrix[start_row + i][start_col + j] = processed_block[i][j];
+                }
+            }
+        }
+        
+        for (int i = 0; i < num_lines; i++) {
+            free(processed_block[i]);
+        }
+        free(processed_block);
+        
+        current_block = current_block->next;
+        block_count++;
+    }
+    printf("\nTodos os blocos foram processados (modo síncrono)!\n");
+}
+
+// Função para distribuir blocos da matriz para os clientes de múltiplos clientes
 void distribute_matrix_blocks(ClientInfo *clients, int num_clients, BlockQueue *queue) {
     MatrixBlock *current_block = queue->head;
     int client_idx = 0;
     int block_count = 0;
     
-    printf("\nDistribuindo %d blocos para %d clientes...\n", queue->count, num_clients);
+    printf("\n=== MODO ASSÍNCRONO (%d clientes) ===\n", num_clients);
+    printf("Distribuindo %d blocos...\n", queue->count);
     
     while (current_block != NULL) {
         printf("Enviando bloco %d para Cliente %d (tamanho: %dx%d, flags: U=%d D=%d L=%d R=%d)...\n", 
@@ -271,7 +364,6 @@ void free_block_queue(BlockQueue *queue) {
     MatrixBlock *current = queue->head;
     while (current != NULL) {
         MatrixBlock *next = current->next;
-        // Liberar a matriz do bloco
         for (int i = 0; i < current->num_rows; i++) {
             free(current->matrix[i]);
         }
@@ -282,74 +374,111 @@ void free_block_queue(BlockQueue *queue) {
     free(queue);
 }
 
-// Função para receber um bloco processado de um cliente
-int receive_processed_block(int client_socket, int **block_buffer, int num_rows, int num_cols) {
-    for (int i = 0; i < num_rows; i++) {
-        ssize_t bytes_received = recv(client_socket, block_buffer[i], num_cols * sizeof(int), MSG_WAITALL);
-        size_t expected_bytes = num_cols * sizeof(int);
-        
-        if (bytes_received < 0) {
-            perror("Erro ao receber linha do bloco processado");
-            return -1;
-        }
-        if ((size_t)bytes_received != expected_bytes) {
-            fprintf(stderr, "Erro: recebido %zd bytes, esperado %zu bytes\n", bytes_received, expected_bytes);
-            return -1;
-        }
-    }
-    return 0;
-}
-
-// Função para receber resultados dos clientes e remontar a matriz
+// Função para receber resultados dos clientes com ordem flexível
 void receive_results_from_clients(ClientInfo *clients, int num_clients, BlockQueue *queue, int **matrix, int num_lines, int num_columns) {
-    MatrixBlock *current_block = queue->head;
+    int total_blocks = queue->count;
+    int blocks_received = 0;
+    
+    ClientBlocks *client_blocks = malloc(num_clients * sizeof(ClientBlocks));
+    for (int i = 0; i < num_clients; i++) {
+        int max_blocks = (total_blocks + num_clients - 1) / num_clients + 1;
+        client_blocks[i].block_indices = malloc(max_blocks * sizeof(int));
+        client_blocks[i].count = 0;
+        client_blocks[i].received = 0;
+    }
+    
     int client_idx = 0;
-    int block_count = 0;
+    for (int block_idx = 0; block_idx < total_blocks; block_idx++) {
+        client_blocks[client_idx].block_indices[client_blocks[client_idx].count] = block_idx;
+        client_blocks[client_idx].count++;
+        client_idx = (client_idx + 1) % num_clients;
+    }
     
-    printf("\nAguardando resultados processados dos clientes...\n");
+    printf("\n=== Mapeamento de Blocos por Cliente ===\n");
+    for (int i = 0; i < num_clients; i++) {
+        printf("Cliente %d receberá %d blocos\n", i + 1, client_blocks[i].count);
+    }
     
-    while (current_block != NULL) {
-        printf("Recebendo bloco processado %d do Cliente %d...\n", block_count + 1, client_idx + 1);
+    printf("\nAguardando resultados processados dos clientes com ordem flexível\n");
+    
+    MatrixBlock **block_array = malloc(total_blocks * sizeof(MatrixBlock *));
+    MatrixBlock *current = queue->head;
+    for (int i = 0; i < total_blocks; i++) {
+        block_array[i] = current;
+        current = current->next;
+    }
+    
+    while (blocks_received < total_blocks) {
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        int max_fd = 0;
         
-        int **processed_block = malloc(current_block->num_rows * sizeof(int *));
-        for (int i = 0; i < current_block->num_rows; i++) {
-            processed_block[i] = malloc(current_block->num_cols * sizeof(int));
-        }
-
-        if (receive_processed_block(clients[client_idx].socket_fd, processed_block, current_block->num_rows, current_block->num_cols) < 0) {
-            printf("Erro ao receber bloco do Cliente %d\n", client_idx + 1);
-        } else {
-            printf("Bloco %d recebido com sucesso!\n", block_count + 1);
-            
-            int div_h = IMAGE_SIZE / num_lines;
-            int div_v = IMAGE_SIZE / num_columns;
-            int block_row = (block_count / div_v) % div_h;
-            int block_col = block_count % div_v;
-            
-            int start_row = block_row * num_lines;
-            int start_col = block_col * num_columns;
-            
-            int offset_i = current_block->flag_u ? 1 : 0;
-            int offset_j = current_block->flag_l ? 1 : 0;
-            
-            for (int i = 0; i < num_lines; i++) {
-                for (int j = 0; j < num_columns; j++) {
-                    matrix[start_row + i][start_col + j] = processed_block[i + offset_i][j + offset_j];
+        for (int i = 0; i < num_clients; i++) {
+            if (client_blocks[i].received < client_blocks[i].count) {
+                FD_SET(clients[i].socket_fd, &readfds);
+                if (clients[i].socket_fd > max_fd) {
+                    max_fd = clients[i].socket_fd;
                 }
             }
         }
         
-        for (int i = 0; i < current_block->num_rows; i++) {
-            free(processed_block[i]);
-        }
-        free(processed_block);
+        int activity = select(max_fd + 1, &readfds, NULL, NULL, NULL);
         
-        current_block = current_block->next;
-        block_count++;
-        client_idx = (client_idx + 1) % num_clients;
+        if (activity < 0) {
+            perror("Erro no select");
+            break;
+        }
+        
+        for (int i = 0; i < num_clients; i++) {
+            if (FD_ISSET(clients[i].socket_fd, &readfds)) {
+                int block_idx = client_blocks[i].block_indices[client_blocks[i].received];
+                MatrixBlock *block = block_array[block_idx];
+                
+                printf("Cliente %d está pronto! Recebendo bloco %d...\n", i + 1, block_idx + 1);
+                
+                int **processed_block = malloc(num_lines * sizeof(int *));
+                for (int j = 0; j < num_lines; j++) {
+                    processed_block[j] = malloc(num_columns * sizeof(int));
+                }
+                
+                if (receive_processed_block(clients[i].socket_fd, processed_block, num_lines, num_columns) < 0) {
+                    printf("Erro ao receber bloco do Cliente %d\n", i + 1);
+                } else {
+                    printf("Bloco %d recebido do Cliente %d com sucesso!\n", block_idx + 1, i + 1);
+                    
+                    int div_h = IMAGE_SIZE / num_lines;
+                    int div_v = IMAGE_SIZE / num_columns;
+                    int block_row = (block_idx / div_v) % div_h;
+                    int block_col = block_idx % div_v;
+                    
+                    int start_row = block_row * num_lines;
+                    int start_col = block_col * num_columns;
+                    
+                    for (int row = 0; row < num_lines; row++) {
+                        for (int col = 0; col < num_columns; col++) {
+                            matrix[start_row + row][start_col + col] = processed_block[row][col];
+                        }
+                    }
+                    
+                    blocks_received++;
+                    client_blocks[i].received++;
+                }
+                
+                for (int j = 0; j < num_lines; j++) {
+                    free(processed_block[j]);
+                }
+                free(processed_block);
+            }
+        }
     }
     
-    printf("\nTodos os blocos processados foram recebidos e remontados!\n");
+    printf("\nTodos os blocos processados foram recebidos e remontados! (%d/%d)\n", blocks_received, total_blocks);
+    
+    for (int i = 0; i < num_clients; i++) {
+        free(client_blocks[i].block_indices);
+    }
+    free(client_blocks);
+    free(block_array);
 }
 
 int main(){
@@ -364,7 +493,7 @@ int main(){
         matrix[i] = malloc(IMAGE_SIZE * sizeof(int));
     }
 
-    fp = fopen("../data/matriz_2000x2000.txt", "r");
+    fp = fopen("data/matriz_2000x2000.txt", "r");
     if (fp == NULL) {
         perror("Erro ao abrir arquivo");
         for (i = 0; i < IMAGE_SIZE; i++) {
@@ -416,9 +545,12 @@ int main(){
     
     clock_gettime(CLOCK_MONOTONIC, &start_time);
     
-    distribute_matrix_blocks(clients, num_clients, queue);
-
-    receive_results_from_clients(clients, num_clients, queue, matrix, num_lines, num_columns);
+    if (num_clients == 1) {
+        process_single_client_sync(&clients[0], queue, matrix, num_lines, num_columns);
+    } else {
+        distribute_matrix_blocks(clients, num_clients, queue);
+        receive_results_from_clients(clients, num_clients, queue, matrix, num_lines, num_columns);
+    }
     
     clock_gettime(CLOCK_MONOTONIC, &end_time);
     
